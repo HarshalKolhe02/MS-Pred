@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Virtual environments (NEVER commit these)
+ms_env/
+venv/
+env/
+.env/
+.venv/
+
+# Data files (too large for git — transfer manually via USB/SCP)
+data/*.msp
+data/*.npz
+data/*.csv
+
+# Model checkpoints (transfer manually after training)
+checkpoints/*.pt
+checkpoints/*.pth
+checkpoints/learning_curves.png
+checkpoints/training_history.csv
+
+# Reports with generated plots (regenerate from script)
+reports/ml_side_by_side/
+reports/accuracy/
+
+# Virtual environments
+venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
