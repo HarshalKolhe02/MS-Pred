@@ -25,7 +25,7 @@ except ImportError:
 def main():
     print("=" * 80)
     print("PHYSICS-GUIDED MASS SPECTROMETRY PREDICTOR — v4 (GTX 1080 Ti)")
-    print("Weighted BCE + SteinScott Cosine | Per-channel Sigmoid | float32")
+    print("Weighted BCE + SteinScott Cosine | Per-channel Sigmoid | float32 | 1000 epochs")
     print("=" * 80)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -49,8 +49,8 @@ def main():
         batch_size     = 64,       # float32 @ 64 — safe for 11 GB VRAM
         hidden_dim     = 768,      # larger model for better accuracy
         num_blocks     = 6,
-        epochs         = 150,
-        patience       = 30,
+        epochs         = 1000,
+        patience       = 100,
         lr             = 5e-4,
         checkpoint_dir = "checkpoints",
     )

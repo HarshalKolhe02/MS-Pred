@@ -38,8 +38,8 @@ def train_model(
     batch_size:     int           = 64,
     hidden_dim:     int           = 768,
     num_blocks:     int           = 6,
-    epochs:         int           = 150,
-    patience:       int           = 30,
+    epochs:         int           = 1000,
+    patience:       int           = 100,
     lr:             float         = 5e-4,
     weight_decay:   float         = 1e-4,
     checkpoint_dir: str           = "checkpoints",
@@ -54,8 +54,9 @@ def train_model(
         gb  = torch.cuda.get_device_properties(0).total_memory / 1024**3
         print(f"  GPU   : {gpu}  ({gb:.1f} GB)")
     print(f"  Model : hidden={hidden_dim}  blocks={num_blocks}")
-    print(f"  LR    : {lr:.1e}   Batch: {batch_size}   Epochs: {epochs}")
+    print(f"  LR    : {lr:.1e}   Batch: {batch_size}   Epochs: {epochs}  Patience: {patience}")
     print(f"  Loss  : WeightedBCE (peak_boost=9) + 0.5 × SteinScott Cosine")
+    print(f"  Val   : Full validation set evaluated every epoch (YOLO-style)")
     print(f"{'='*70}\n")
 
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -118,14 +119,22 @@ def train_model(
     best_cosine = -1.0;  best_epoch = 0;  no_improve = 0
     ckpt_path    = os.path.join(checkpoint_dir, "best_spectral_model.pt")
     history_path = os.path.join(checkpoint_dir, "training_history.csv")
-    hist = {k: [] for k in ["epoch", "train_loss", "val_loss", "val_cosine",
-                              "val_recall", "base_match", "lr"]}
+    hist = {k: [] for k in [
+        "epoch", "lr", "train_loss", "val_loss",
+        "cosine_mean", "cosine_median", "cosine_std",
+        "recall_mean", "recall_std",
+        "base_match_pct",
+        "mae_mean", "mae_std",
+        "rmse_mean", "rmse_std",
+        "n_val",
+    ]}
 
-    hdr = (f"{'Ep':>4} | {'LR':>9} | {'TrLoss':>8} | {'VaLoss':>8} | "
-           f"{'Cosine':>7} | {'Recall%':>7} | {'Base%':>6} | {'s':>5}")
-    print("=" * 72)
+    hdr = (f"{'Ep':>5} | {'LR':>9} | {'TrLoss':>8} | {'VaLoss':>8} | "
+           f"{'Cos↑':>7} | {'Med':>6} | {'Rec%':>6} | {'Base%':>6} | "
+           f"{'MAE':>6} | {'RMSE':>6} | {'N':>5} | {'s':>5}")
+    print("=" * 92)
     print(hdr)
-    print("=" * 72)
+    print("=" * 92)
 
     # ── Training Loop ─────────────────────────────────────────────────────────
     for epoch in range(1, epochs + 1):
@@ -161,6 +170,7 @@ def train_model(
         model.eval()
         va_losses = []; cosines = []; recalls = []; matches = []
 
+        maes = []; rmses = []
         with torch.no_grad():
             for x_b, y_b, mw_b, _ in val_loader:
                 x_b  = x_b.to(device,  non_blocking=True)
@@ -180,21 +190,38 @@ def train_model(
                     cosines.append(m["cosine_similarity"])
                     recalls.append(m["peak_recall_pct"])
                     matches.append(m["base_match"])
+                    maes.append(m["mae_pct"])
+                    rmses.append(m["rmse_pct"])
 
-        avg_va     = float(np.mean(va_losses))
-        avg_cosine = float(np.mean(cosines))
-        avg_recall = float(np.mean(recalls))
-        pct_base   = float(np.sum(matches) / len(matches) * 100.0)
-        elapsed    = time.time() - t0
+        avg_va      = float(np.mean(va_losses))
+        cos_arr     = np.array(cosines,  dtype=np.float32)
+        rec_arr     = np.array(recalls,  dtype=np.float32)
+        mae_arr     = np.array(maes,     dtype=np.float32)
+        rmse_arr    = np.array(rmses,    dtype=np.float32)
+        pct_base    = float(np.sum(matches) / len(matches) * 100.0)
+        n_val       = len(cosines)
+        elapsed     = time.time() - t0
 
-        print(f"{epoch:>4} | {current_lr:>9.3e} | {avg_tr:>8.4f} | {avg_va:>8.4f} | "
-              f"{avg_cosine:>7.4f} | {avg_recall:>7.1f} | {pct_base:>6.1f} | {elapsed:>5.1f}")
+        print(f"{epoch:>5} | {current_lr:>9.3e} | {avg_tr:>8.4f} | {avg_va:>8.4f} | "
+              f"{cos_arr.mean():>7.4f} | {np.median(cos_arr):>6.4f} | "
+              f"{rec_arr.mean():>6.1f} | {pct_base:>6.1f} | "
+              f"{mae_arr.mean():>6.2f} | {rmse_arr.mean():>6.2f} | {n_val:>5} | {elapsed:>5.1f}")
 
-        hist["epoch"].append(epoch);           hist["train_loss"].append(avg_tr)
-        hist["val_loss"].append(avg_va);       hist["val_cosine"].append(avg_cosine)
-        hist["val_recall"].append(avg_recall); hist["base_match"].append(pct_base)
-        hist["lr"].append(current_lr)
+        hist["epoch"].append(epoch);              hist["lr"].append(current_lr)
+        hist["train_loss"].append(avg_tr);        hist["val_loss"].append(avg_va)
+        hist["cosine_mean"].append(float(cos_arr.mean()))
+        hist["cosine_median"].append(float(np.median(cos_arr)))
+        hist["cosine_std"].append(float(cos_arr.std()))
+        hist["recall_mean"].append(float(rec_arr.mean()))
+        hist["recall_std"].append(float(rec_arr.std()))
+        hist["base_match_pct"].append(pct_base)
+        hist["mae_mean"].append(float(mae_arr.mean()))
+        hist["mae_std"].append(float(mae_arr.std()))
+        hist["rmse_mean"].append(float(rmse_arr.mean()))
+        hist["rmse_std"].append(float(rmse_arr.std()))
+        hist["n_val"].append(n_val)
 
+        avg_cosine = float(cos_arr.mean())
         if avg_cosine > (best_cosine + 1e-4):
             best_cosine = avg_cosine;  best_epoch = epoch;  no_improve = 0
             torch.save({
@@ -202,7 +229,7 @@ def train_model(
                 "model_state_dict":    model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_cosine":          best_cosine,
-                "val_recall":          avg_recall,
+                "val_recall":          float(rec_arr.mean()),
                 "in_features":         in_features,
                 "hidden_dim":          hidden_dim,
                 "num_blocks":          num_blocks,
@@ -219,15 +246,36 @@ def train_model(
     print("=" * 72)
 
     # ── History ───────────────────────────────────────────────────────────────
+    csv_cols = [
+        "epoch", "lr", "train_loss", "val_loss",
+        "cosine_mean", "cosine_median", "cosine_std",
+        "recall_mean", "recall_std",
+        "base_match_pct",
+        "mae_mean", "mae_std",
+        "rmse_mean", "rmse_std",
+        "n_val",
+    ]
     with open(history_path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["epoch", "lr", "train_loss", "val_loss", "val_cosine",
-                    "val_recall", "base_match_pct"])
+        w.writerow(csv_cols)
         for i in range(len(hist["epoch"])):
-            w.writerow([hist["epoch"][i], f"{hist['lr'][i]:.6e}",
-                        f"{hist['train_loss'][i]:.4f}", f"{hist['val_loss'][i]:.4f}",
-                        f"{hist['val_cosine'][i]:.4f}", f"{hist['val_recall'][i]:.2f}",
-                        f"{hist['base_match'][i]:.2f}"])
+            w.writerow([
+                hist["epoch"][i],
+                f"{hist['lr'][i]:.6e}",
+                f"{hist['train_loss'][i]:.4f}",
+                f"{hist['val_loss'][i]:.4f}",
+                f"{hist['cosine_mean'][i]:.4f}",
+                f"{hist['cosine_median'][i]:.4f}",
+                f"{hist['cosine_std'][i]:.4f}",
+                f"{hist['recall_mean'][i]:.2f}",
+                f"{hist['recall_std'][i]:.2f}",
+                f"{hist['base_match_pct'][i]:.2f}",
+                f"{hist['mae_mean'][i]:.3f}",
+                f"{hist['mae_std'][i]:.3f}",
+                f"{hist['rmse_mean'][i]:.3f}",
+                f"{hist['rmse_std'][i]:.3f}",
+                hist["n_val"][i],
+            ])
     print(f"[Log] History → {history_path}")
     _plot_curves(hist, os.path.join(checkpoint_dir, "learning_curves.png"))
 
@@ -264,22 +312,35 @@ def train_model(
 
 def _plot_curves(hist: dict, path: str):
     ep = hist["epoch"]
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), dpi=150)
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), dpi=150)
 
+    # Panel 1: Loss
     axes[0].plot(ep, hist["train_loss"], label="Train", color="#1565c0", lw=2)
     axes[0].plot(ep, hist["val_loss"],   label="Val",   color="#d32f2f", lw=2)
     axes[0].set(xlabel="Epoch", ylabel="Loss", title="BCE + Cosine Loss")
     axes[0].legend(); axes[0].grid(alpha=0.3)
 
-    axes[1].plot(ep, hist["val_cosine"], color="#2e7d32", lw=2.2)
-    axes[1].fill_between(ep, hist["val_cosine"], alpha=0.15, color="#2e7d32")
-    axes[1].set(xlabel="Epoch", ylabel="Cosine Similarity", title="Validation Cosine Sim")
-    axes[1].set_ylim(0, 1.05); axes[1].grid(alpha=0.3)
+    # Panel 2: Cosine similarity with std band
+    cos_m = np.array(hist["cosine_mean"])
+    cos_s = np.array(hist["cosine_std"])
+    axes[1].plot(ep, cos_m,  color="#2e7d32", lw=2.2, label="Mean Cosine")
+    axes[1].plot(ep, hist["cosine_median"], color="#1b5e20", lw=1.4, ls="--", label="Median")
+    axes[1].fill_between(ep, cos_m - cos_s, cos_m + cos_s, alpha=0.15, color="#2e7d32")
+    axes[1].set(xlabel="Epoch", ylabel="Cosine Similarity",
+                title=f"Val Cosine (N={hist['n_val'][-1]} molecules)")
+    axes[1].set_ylim(0, 1.05); axes[1].legend(fontsize=8); axes[1].grid(alpha=0.3)
 
-    axes[2].plot(ep, [v/100 for v in hist["val_recall"]],    label="Recall/100",    color="#ef6c00", lw=1.8, ls="--")
-    axes[2].plot(ep, [v/100 for v in hist["base_match"]],    label="BaseMatch/100", color="#6a1b9a", lw=1.8, ls=":")
-    axes[2].set(xlabel="Epoch", ylabel="Rate", title="Recall & Base Peak Match")
-    axes[2].set_ylim(0, 1.05); axes[2].legend(); axes[2].grid(alpha=0.3)
+    # Panel 3: Recall, Base Match, MAE
+    ax3 = axes[2]
+    ax3b = ax3.twinx()
+    ax3.plot(ep, [v/100 for v in hist["recall_mean"]],    label="Recall/100",   color="#ef6c00", lw=1.8, ls="--")
+    ax3.plot(ep, [v/100 for v in hist["base_match_pct"]], label="BaseMatch/100", color="#6a1b9a", lw=1.8, ls=":")
+    ax3b.plot(ep, hist["mae_mean"], label="MAE%", color="#b71c1c", lw=1.5, alpha=0.7)
+    ax3.set(xlabel="Epoch", ylabel="Rate", title="Recall / BaseMatch / MAE")
+    ax3.set_ylim(0, 1.05); ax3b.set_ylabel("MAE (%)", color="#b71c1c")
+    lines1, labels1 = ax3.get_legend_handles_labels()
+    lines2, labels2 = ax3b.get_legend_handles_labels()
+    ax3.legend(lines1+lines2, labels1+labels2, fontsize=8); ax3.grid(alpha=0.3)
 
     plt.tight_layout()
     fig.savefig(path, dpi=150, bbox_inches="tight")
